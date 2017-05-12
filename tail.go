@@ -11,13 +11,14 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"strings"
+	// "strings"
 	"sync"
 	"time"
+	"sync/atomic"
 
-	"github.com/hpcloud/tail/ratelimiter"
-	"github.com/hpcloud/tail/util"
-	"github.com/hpcloud/tail/watch"
+	"github.com/nagae-memooff/tail/ratelimiter"
+	"github.com/nagae-memooff/tail/util"
+	"github.com/nagae-memooff/tail/watch"
 	"gopkg.in/tomb.v1"
 )
 
@@ -87,6 +88,7 @@ type Tail struct {
 	tomb.Tomb // provides: Done, Kill, Dying
 
 	lk sync.Mutex
+	offset int64
 }
 
 var (
@@ -133,6 +135,10 @@ func TailFile(filename string, config Config) (*Tail, error) {
 	go t.tailFileSync()
 
 	return t, nil
+}
+
+func (tail *Tail) Offset() (offset int) {
+	return int(tail.offset)
 }
 
 // Return the file's current position, like stdio's ftell().
@@ -218,7 +224,7 @@ func (tail *Tail) readLine() (string, error) {
 		return line, err
 	}
 
-	line = strings.TrimRight(line, "\n")
+	// line = strings.TrimRight(line, "\n")
 
 	return line, err
 }
@@ -416,6 +422,7 @@ func (tail *Tail) sendLine(line string) bool {
 	for _, line := range lines {
 		tail.Lines <- &Line{line, now, nil}
 	}
+	tail.offset = atomic.AddInt64(&tail.offset, int64(len(line)))
 
 	if tail.Config.RateLimiter != nil {
 		ok := tail.Config.RateLimiter.Pour(uint16(len(lines)))
