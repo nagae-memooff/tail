@@ -13,8 +13,8 @@ import (
 	"os"
 	// "strings"
 	"sync"
-	"time"
 	"sync/atomic"
+	"time"
 
 	"github.com/nagae-memooff/tail/ratelimiter"
 	"github.com/nagae-memooff/tail/util"
@@ -66,8 +66,9 @@ type Config struct {
 	RateLimiter *ratelimiter.LeakyBucket
 
 	// Generic IO
-	Follow      bool // Continue looking for new lines (tail -f)
-	MaxLineSize int  // If non-zero, split longer lines into multiple lines
+	Follow             bool // Continue looking for new lines (tail -f)
+	MaxLineSize        int  // If non-zero, split longer lines into multiple lines
+	LinesChannelLength int
 
 	// Logger, when nil, is set to tail.DefaultLogger
 	// To disable logging: set field to tail.DiscardingLogger
@@ -87,7 +88,7 @@ type Tail struct {
 
 	tomb.Tomb // provides: Done, Kill, Dying
 
-	lk sync.Mutex
+	lk     sync.Mutex
 	offset int64
 }
 
@@ -109,10 +110,14 @@ func TailFile(filename string, config Config) (*Tail, error) {
 
 	t := &Tail{
 		Filename: filename,
-		Lines:    make(chan *Line),
+		Lines:    make(chan *Line, config.LinesChannelLength),
 		Config:   config,
 	}
 
+	if config.Location != nil && config.Location.Whence == 0 {
+		t.offset = config.Location.Offset
+
+	}
 	// when Logger was not specified in config, use default logger
 	if t.Logger == nil {
 		t.Logger = log.New(os.Stderr, "", log.LstdFlags)
@@ -138,6 +143,8 @@ func TailFile(filename string, config Config) (*Tail, error) {
 }
 
 func (tail *Tail) Offset() (offset int) {
+	//   offset_64, _ := tail.Tell()
+	//   return int(offset_64)
 	return int(tail.offset)
 }
 
@@ -214,8 +221,13 @@ func (tail *Tail) reopen() error {
 }
 
 func (tail *Tail) readLine() (string, error) {
+	//   tmpb := make([]byte, 1024 * 16)
 	tail.lk.Lock()
 	line, err := tail.reader.ReadString('\n')
+	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
+	// _,  err := tail.reader.Read(tmpb)
+	// line := string(tmpb)
+
 	tail.lk.Unlock()
 	if err != nil {
 		// Note ReadString "returns the data read before the error" in
@@ -404,6 +416,7 @@ func (tail *Tail) seekTo(pos SeekInfo) error {
 		return fmt.Errorf("Seek error on %s: %s", tail.Filename, err)
 	}
 	// Reset the read buffer whenever the file is re-seek'ed
+	//   tail.offset = offset
 	tail.reader.Reset(tail.file)
 	return nil
 }
@@ -422,7 +435,8 @@ func (tail *Tail) sendLine(line string) bool {
 	for _, line := range lines {
 		tail.Lines <- &Line{line, now, nil}
 	}
-	tail.offset = atomic.AddInt64(&tail.offset, int64(len(line)))
+
+	// tail.Lines <- &Line{line, now, nil}
 
 	if tail.Config.RateLimiter != nil {
 		ok := tail.Config.RateLimiter.Pour(uint16(len(lines)))
