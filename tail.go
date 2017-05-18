@@ -162,12 +162,13 @@ func (tail *Tail) Tell() (offset int64, err error) {
 	}
 
 	tail.lk.Lock()
-	defer tail.lk.Unlock()
 	if tail.reader == nil {
+		tail.lk.Unlock()
 		return
 	}
 
 	offset -= int64(tail.reader.Buffered())
+	tail.lk.Unlock()
 	return
 }
 
@@ -224,11 +225,14 @@ func (tail *Tail) readLine() (string, error) {
 	//   tmpb := make([]byte, 1024 * 16)
 	tail.lk.Lock()
 	line, err := tail.reader.ReadString('\n')
-	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
+	//   line_slice, err := tail.reader.ReadSlice('\n')
 	// _,  err := tail.reader.Read(tmpb)
 	// line := string(tmpb)
-
 	tail.lk.Unlock()
+	//   line := string(line_slice)
+
+	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
+
 	if err != nil {
 		// Note ReadString "returns the data read before the error" in
 		// case of an error, including EOF, so we return it as is. The
@@ -268,20 +272,18 @@ func (tail *Tail) tailFileSync() {
 
 	tail.openReader()
 
-	var offset int64
-	var err error
-
 	// Read line by line.
 	for {
 		// do not seek in named pipes
-		if !tail.Pipe {
-			// grab the position in case we need to back up in the event of a half-line
-			offset, err = tail.Tell()
-			if err != nil {
-				tail.Kill(err)
-				return
-			}
-		}
+		// FIXME: 什么情况下这里会出错？ 被截断？
+		/// if !tail.Pipe {
+		/// 	// grab the position in case we need to back up in the event of a half-line
+		/// 	_, err = tail.Tell()
+		/// 	if err != nil {
+		/// 		tail.Kill(err)
+		/// 		return
+		/// 	}
+		/// }
 
 		line, err := tail.readLine()
 
@@ -315,7 +317,8 @@ func (tail *Tail) tailFileSync() {
 			if tail.Follow && line != "" {
 				// this has the potential to never return the last line if
 				// it's not followed by a newline; seems a fair trade here
-				err := tail.seekTo(SeekInfo{Offset: offset, Whence: 0})
+				tail.offset -= int64(len(line))
+				err := tail.seekTo(SeekInfo{Offset: tail.offset, Whence: 0})
 				if err != nil {
 					tail.Kill(err)
 					return
@@ -424,22 +427,27 @@ func (tail *Tail) seekTo(pos SeekInfo) error {
 // sendLine sends the line(s) to Lines channel, splitting longer lines
 // if necessary. Return false if rate limit is reached.
 func (tail *Tail) sendLine(line string) bool {
-	now := time.Now()
-	lines := []string{line}
+	// now := time.Now()
+	var now time.Time
+	length := uint16(1)
 
 	// Split longer lines
 	if tail.MaxLineSize > 0 && len(line) > tail.MaxLineSize {
-		lines = util.PartitionString(line, tail.MaxLineSize)
-	}
+		lines := util.PartitionString(line, tail.MaxLineSize)
 
-	for _, line := range lines {
+		for _, line := range lines {
+			tail.Lines <- &Line{line, now, nil}
+		}
+
+		length = uint16(len(lines))
+	} else {
 		tail.Lines <- &Line{line, now, nil}
 	}
 
 	// tail.Lines <- &Line{line, now, nil}
 
 	if tail.Config.RateLimiter != nil {
-		ok := tail.Config.RateLimiter.Pour(uint16(len(lines)))
+		ok := tail.Config.RateLimiter.Pour(length)
 		if !ok {
 			tail.Logger.Printf("Leaky bucket full (%v); entering 1s cooloff period.\n",
 				tail.Filename)
