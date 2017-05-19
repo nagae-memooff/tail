@@ -142,35 +142,35 @@ func TailFile(filename string, config Config) (*Tail, error) {
 	return t, nil
 }
 
-func (tail *Tail) Offset() (offset int) {
+func (tail *Tail) Offset() (offset int64) {
 	//   offset_64, _ := tail.Tell()
 	//   return int(offset_64)
-	return int(tail.offset)
+	return atomic.LoadInt64(&(tail.offset))
 }
 
 // Return the file's current position, like stdio's ftell().
 // But this value is not very accurate.
 // it may readed one line in the chan(tail.Lines),
 // so it may lost one line.
-func (tail *Tail) Tell() (offset int64, err error) {
-	if tail.file == nil {
-		return
-	}
-	offset, err = tail.file.Seek(0, os.SEEK_CUR)
-	if err != nil {
-		return
-	}
-
-	tail.lk.Lock()
-	if tail.reader == nil {
-		tail.lk.Unlock()
-		return
-	}
-
-	offset -= int64(tail.reader.Buffered())
-	tail.lk.Unlock()
-	return
-}
+// func (tail *Tail) Tell() (offset int64, err error) {
+// 	if tail.file == nil {
+// 		return
+// 	}
+// 	offset, err = tail.file.Seek(0, os.SEEK_CUR)
+// 	if err != nil {
+// 		return
+// 	}
+//
+// 	tail.lk.Lock()
+// 	if tail.reader == nil {
+// 		tail.lk.Unlock()
+// 		return
+// 	}
+//
+// 	offset -= int64(tail.reader.Buffered())
+// 	tail.lk.Unlock()
+// 	return
+// }
 
 // Stop stops the tailing activity.
 func (tail *Tail) Stop() error {
@@ -225,11 +225,11 @@ func (tail *Tail) readLine() (string, error) {
 	//   tmpb := make([]byte, 1024 * 16)
 	tail.lk.Lock()
 	line, err := tail.reader.ReadString('\n')
-	//   line_slice, err := tail.reader.ReadSlice('\n')
+	//   line_slice, err := tail.reader.ReadBytes('\n')
+	//   line := string(line_slice)
 	// _,  err := tail.reader.Read(tmpb)
 	// line := string(tmpb)
 	tail.lk.Unlock()
-	//   line := string(line_slice)
 
 	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
 
@@ -429,7 +429,7 @@ func (tail *Tail) seekTo(pos SeekInfo) error {
 func (tail *Tail) sendLine(line string) bool {
 	// now := time.Now()
 	var now time.Time
-	length := uint16(1)
+	// length := uint16(1)
 
 	// Split longer lines
 	if tail.MaxLineSize > 0 && len(line) > tail.MaxLineSize {
@@ -439,21 +439,21 @@ func (tail *Tail) sendLine(line string) bool {
 			tail.Lines <- &Line{line, now, nil}
 		}
 
-		length = uint16(len(lines))
+		// length = uint16(len(lines))
 	} else {
 		tail.Lines <- &Line{line, now, nil}
 	}
 
 	// tail.Lines <- &Line{line, now, nil}
 
-	if tail.Config.RateLimiter != nil {
-		ok := tail.Config.RateLimiter.Pour(length)
-		if !ok {
-			tail.Logger.Printf("Leaky bucket full (%v); entering 1s cooloff period.\n",
-				tail.Filename)
-			return false
-		}
-	}
+	// if tail.Config.RateLimiter != nil {
+	// 	ok := tail.Config.RateLimiter.Pour(length)
+	// 	if !ok {
+	// 		tail.Logger.Printf("Leaky bucket full (%v); entering 1s cooloff period.\n",
+	// 			tail.Filename)
+	// 		return false
+	// 	}
+	// }
 
 	return true
 }
