@@ -11,6 +11,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 	// "strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/nagae-memooff/tail/util"
 	"github.com/nagae-memooff/tail/watch"
 	"gopkg.in/tomb.v1"
+	"regexp"
 )
 
 var (
@@ -72,6 +74,7 @@ type Config struct {
 
 	// Logger, when nil, is set to tail.DefaultLogger
 	// To disable logging: set field to tail.DiscardingLogger
+	Regex  string
 	Logger logger
 }
 
@@ -90,6 +93,10 @@ type Tail struct {
 
 	lk     sync.Mutex
 	offset int64
+
+	readLine  func() (string, error)
+	regex     *regexp.Regexp
+	next_line string
 }
 
 var (
@@ -103,12 +110,12 @@ var (
 // via the `Tail.Lines` channel. To handle errors during tailing,
 // invoke the `Wait` or `Err` method after finishing reading from the
 // `Lines` channel.
-func TailFile(filename string, config Config) (*Tail, error) {
+func TailFile(filename string, config Config) (t *Tail, err error) {
 	if config.ReOpen && !config.Follow {
 		util.Fatal("cannot set ReOpen without Follow.")
 	}
 
-	t := &Tail{
+	t = &Tail{
 		Filename: filename,
 		Lines:    make(chan *Line, config.LinesChannelLength),
 		Config:   config,
@@ -135,6 +142,17 @@ func TailFile(filename string, config Config) (*Tail, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if config.Regex != "" {
+		t.regex, err = regexp.Compile(config.Regex)
+		if err != nil {
+			t.regex = regexp.MustCompile("")
+		}
+
+		t.readLine = t._readXLine
+	} else {
+		t.readLine = t._readLine
 	}
 
 	go t.tailFileSync()
@@ -221,17 +239,34 @@ func (tail *Tail) reopen() error {
 	return nil
 }
 
-func (tail *Tail) readLine() (string, error) {
-	//   tmpb := make([]byte, 1024 * 16)
+// func (tail *Tail) readLine() (string, error) {
+// 	//   tmpb := make([]byte, 1024 * 16)
+// 	tail.lk.Lock()
+// 	line, err := tail.reader.ReadString('\n')
+// 	//   line_slice, err := tail.reader.ReadBytes('\n')
+// 	//   line := string(line_slice)
+// 	// _,  err := tail.reader.Read(tmpb)
+// 	// line := string(tmpb)
+// 	tail.lk.Unlock()
+//
+// 	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
+//
+// 	if err != nil {
+// 		// Note ReadString "returns the data read before the error" in
+// 		// case of an error, including EOF, so we return it as is. The
+// 		// caller is expected to process it if err is EOF.
+// 		return line, err
+// 	}
+//
+// 	// line = strings.TrimRight(line, "\n")
+//
+// 	return line, err
+// }
+
+func (tail *Tail) _readLine() (string, error) {
 	tail.lk.Lock()
 	line, err := tail.reader.ReadString('\n')
-	//   line_slice, err := tail.reader.ReadBytes('\n')
-	//   line := string(line_slice)
-	// _,  err := tail.reader.Read(tmpb)
-	// line := string(tmpb)
 	tail.lk.Unlock()
-
-	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
 
 	if err != nil {
 		// Note ReadString "returns the data read before the error" in
@@ -242,6 +277,58 @@ func (tail *Tail) readLine() (string, error) {
 
 	// line = strings.TrimRight(line, "\n")
 
+	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
+	return line, err
+}
+
+func (tail *Tail) _readXLine() (line string, err error) {
+	tail.lk.Lock()
+	defer tail.lk.Unlock()
+
+	if tail.next_line != "" {
+		line = tail.next_line
+		tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
+
+		tail.next_line = ""
+		return line, nil
+	}
+
+	line, err = tail.reader.ReadString('\n')
+	if err != nil {
+		return line, err
+	}
+
+	// 若不包含，说明是异常日志，开启多行模式
+	if !tail.regex.MatchString(line) {
+		mline := []string{line}
+
+		for {
+			line, err := tail.reader.ReadString('\n')
+			if err != nil {
+				// TODO 错误处理？
+				return line, err
+			}
+
+			if tail.regex.MatchString(line) {
+				tail.next_line = line
+				break
+			}
+
+			mline = append(mline, line)
+		}
+
+		// 此时 mline里是一条数据， next_line是下一条数据
+		line = strings.Join(mline, "")
+	}
+
+	if err != nil {
+		// Note ReadString "returns the data read before the error" in
+		// case of an error, including EOF, so we return it as is. The
+		// caller is expected to process it if err is EOF.
+		return line, err
+	}
+
+	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
 	return line, err
 }
 
@@ -317,7 +404,6 @@ func (tail *Tail) tailFileSync() {
 			if tail.Follow && line != "" {
 				// this has the potential to never return the last line if
 				// it's not followed by a newline; seems a fair trade here
-				tail.offset -= int64(len(line))
 				err := tail.seekTo(SeekInfo{Offset: tail.offset, Whence: 0})
 				if err != nil {
 					tail.Kill(err)
@@ -388,6 +474,7 @@ func (tail *Tail) waitForChanges() error {
 	case <-tail.changes.Truncated:
 		// Always reopen truncated files (Follow is true)
 		tail.Logger.Printf("Re-opening truncated file %s ...", tail.Filename)
+		atomic.StoreInt64(&tail.offset, 0)
 		if err := tail.reopen(); err != nil {
 			return err
 		}
