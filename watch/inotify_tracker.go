@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/nagae-memooff/tail/util"
 
@@ -103,15 +104,11 @@ func remove(winfo *watchInfo) error {
 
 	winfo.fname = filepath.Clean(winfo.fname)
 	shared.mux.Lock()
-	done := shared.done[winfo.fname]
-	if done != nil {
-		delete(shared.done, winfo.fname)
-		close(done)
-	}
 
 	fname := winfo.fname
 	if winfo.isCreate() {
 		// Watch for new files to be created in the parent directory.
+		shared.watchNums[fname]--
 		fname = filepath.Dir(fname)
 	}
 	shared.watchNums[fname]--
@@ -126,6 +123,11 @@ func remove(winfo *watchInfo) error {
 	// synchronously for the kernel to acknowledge the removal of the watch
 	// for this file, which causes us to deadlock if we still held the lock.
 	if watchNum == 0 {
+		done := shared.done[winfo.fname]
+		if done != nil {
+			delete(shared.done, winfo.fname)
+			close(done)
+		}
 		return shared.watcher.Remove(fname)
 	}
 	shared.remove <- winfo
@@ -216,6 +218,7 @@ func (shared *InotifyTracker) sendEvent(event fsnotify.Event) {
 
 	shared.mux.Lock()
 	ch := shared.chans[name]
+
 	done := shared.done[name]
 	shared.mux.Unlock()
 
@@ -223,6 +226,9 @@ func (shared *InotifyTracker) sendEvent(event fsnotify.Event) {
 		select {
 		case ch <- event:
 		case <-done:
+			logger.Println("sent %v but closed", event)
+		case <-time.After(time.Second):
+			logger.Println("sent %v but timeout", event)
 		}
 	}
 }

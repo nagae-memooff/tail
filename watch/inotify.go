@@ -44,6 +44,7 @@ func (fw *InotifyFileWatcher) BlockUntilExists(t *tomb.Tomb) error {
 	for {
 		select {
 		case evt, ok := <-events:
+
 			if !ok {
 				return fmt.Errorf("inotify watcher has been closed")
 			}
@@ -75,7 +76,6 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 	fw.Size = pos
 
 	go func() {
-
 		events := Events(fw.Filename)
 
 		for {

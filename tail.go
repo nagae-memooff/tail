@@ -123,8 +123,8 @@ func TailFile(filename string, config Config) (t *Tail, err error) {
 
 	if config.Location != nil && config.Location.Whence == 0 {
 		t.offset = config.Location.Offset
-
 	}
+
 	// when Logger was not specified in config, use default logger
 	if t.Logger == nil {
 		t.Logger = log.New(os.Stderr, "", log.LstdFlags)
@@ -161,8 +161,6 @@ func TailFile(filename string, config Config) (t *Tail, err error) {
 }
 
 func (tail *Tail) Offset() (offset int64) {
-	//   offset_64, _ := tail.Tell()
-	//   return int(offset_64)
 	return atomic.LoadInt64(&(tail.offset))
 }
 
@@ -349,8 +347,16 @@ func (tail *Tail) tailFileSync() {
 
 	// Seek to requested location on first open of the file.
 	if tail.Location != nil {
-		_, err := tail.file.Seek(tail.Location.Offset, tail.Location.Whence)
-		tail.Logger.Printf("Seeked %s - %+v\n", tail.Filename, tail.Location)
+		file_size, _ := tail.file.Seek(0, os.SEEK_END)
+		offset, err := tail.file.Seek(tail.Location.Offset, tail.Location.Whence)
+
+		if offset > file_size {
+			// 说明文件被悄悄地截断过，从末尾开始读即可
+			tail.file.Seek(0, os.SEEK_END)
+			tail.offset = file_size
+		}
+
+		// tail.Logger.Printf("Seeked %s - %+v \n", tail.Filename, tail.Location)
 		if err != nil {
 			tail.Killf("Seek error on %s: %s", tail.Filename, err)
 			return
@@ -361,17 +367,6 @@ func (tail *Tail) tailFileSync() {
 
 	// Read line by line.
 	for {
-		// do not seek in named pipes
-		// FIXME: 什么情况下这里会出错？ 被截断？
-		/// if !tail.Pipe {
-		/// 	// grab the position in case we need to back up in the event of a half-line
-		/// 	_, err = tail.Tell()
-		/// 	if err != nil {
-		/// 		tail.Kill(err)
-		/// 		return
-		/// 	}
-		/// }
-
 		line, err := tail.readLine()
 
 		// Process `line` even if err is EOF.
@@ -464,7 +459,9 @@ func (tail *Tail) waitForChanges() error {
 			if err := tail.reopen(); err != nil {
 				return err
 			}
+
 			tail.Logger.Printf("Successfully reopened %s", tail.Filename)
+			atomic.StoreInt64(&tail.offset, 0)
 			tail.openReader()
 			return nil
 		} else {
