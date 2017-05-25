@@ -303,7 +303,7 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		for {
 			line, err := tail.reader.ReadString('\n')
 			if err != nil {
-				// TODO 错误处理？
+				line = "wait"
 				return line, err
 			}
 
@@ -317,13 +317,6 @@ func (tail *Tail) _readXLine() (line string, err error) {
 
 		// 此时 mline里是一条数据， next_line是下一条数据
 		line = strings.Join(mline, "")
-	}
-
-	if err != nil {
-		// Note ReadString "returns the data read before the error" in
-		// case of an error, including EOF, so we return it as is. The
-		// caller is expected to process it if err is EOF.
-		return line, err
 	}
 
 	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
@@ -347,13 +340,25 @@ func (tail *Tail) tailFileSync() {
 
 	// Seek to requested location on first open of the file.
 	if tail.Location != nil {
-		file_size, _ := tail.file.Seek(0, os.SEEK_END)
-		offset, err := tail.file.Seek(tail.Location.Offset, tail.Location.Whence)
+		var (
+			file_size, offset int64
+			err               error
+		)
 
-		if offset > file_size {
-			// 说明文件被悄悄地截断过，从末尾开始读即可
-			tail.file.Seek(0, os.SEEK_END)
-			tail.offset = file_size
+		if tail.Location.Whence == os.SEEK_END && tail.Location.Offset == 0 {
+			// 说明从末尾开始
+			offset, _ = tail.file.Seek(tail.Location.Offset, tail.Location.Whence)
+			tail.offset = offset
+
+		} else {
+			file_size, _ = tail.file.Seek(0, os.SEEK_END)
+			offset, err = tail.file.Seek(tail.Location.Offset, tail.Location.Whence)
+
+			if offset > file_size {
+				// 说明文件被悄悄地截断过，从末尾开始读即可
+				tail.file.Seek(0, os.SEEK_END)
+				tail.offset = file_size
+			}
 		}
 
 		// tail.Logger.Printf("Seeked %s - %+v \n", tail.Filename, tail.Location)
