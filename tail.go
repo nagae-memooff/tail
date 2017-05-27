@@ -94,9 +94,10 @@ type Tail struct {
 	lk     sync.Mutex
 	offset int64
 
-	readLine  func() (string, error)
-	regex     *regexp.Regexp
-	next_line string
+	readLine func() (string, error)
+	regex    *regexp.Regexp
+
+	pre_read string
 }
 
 var (
@@ -273,8 +274,6 @@ func (tail *Tail) _readLine() (string, error) {
 		return line, err
 	}
 
-	// line = strings.TrimRight(line, "\n")
-
 	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
 	return line, err
 }
@@ -283,22 +282,31 @@ func (tail *Tail) _readXLine() (line string, err error) {
 	tail.lk.Lock()
 	defer tail.lk.Unlock()
 
-	if tail.next_line != "" {
-		line = tail.next_line
-		tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
-
-		tail.next_line = ""
-		return line, nil
+	if tail.pre_read == "" {
+		// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
+		for !tail.regex.MatchString(tail.pre_read) {
+			tail.pre_read, err = tail.reader.ReadString('\n')
+			if err != nil {
+				return line, err
+			}
+		}
 	}
 
-	line, err = tail.reader.ReadString('\n')
+	nextline, err := tail.reader.ReadString('\n')
 	if err != nil {
 		return line, err
 	}
 
-	// 若不包含，说明是异常日志，开启多行模式
-	if !tail.regex.MatchString(line) {
-		mline := []string{line}
+	if tail.regex.MatchString(nextline) {
+		line = tail.pre_read
+		tail.pre_read = nextline
+
+		tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
+		return line, nil
+
+	} else {
+		// 若不包含，说明是异常日志，开启多行模式
+		mline := []string{tail.pre_read, nextline}
 
 		for {
 			line, err := tail.reader.ReadString('\n')
@@ -307,15 +315,15 @@ func (tail *Tail) _readXLine() (line string, err error) {
 				return line, err
 			}
 
-			if tail.regex.MatchString(line) {
-				tail.next_line = line
+			if !tail.regex.MatchString(line) {
+				mline = append(mline, line)
+			} else {
+				tail.pre_read = line
 				break
 			}
-
-			mline = append(mline, line)
 		}
 
-		// 此时 mline里是一条数据， next_line是下一条数据
+		// 此时 mline里是一条数据， pre_read是下一条数据
 		line = strings.Join(mline, "")
 	}
 
