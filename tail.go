@@ -15,7 +15,6 @@ import (
 	// "strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/nagae-memooff/tail/ratelimiter"
 	"github.com/nagae-memooff/tail/util"
@@ -30,13 +29,12 @@ var (
 
 type Line struct {
 	Text string
-	Time time.Time
 	Err  error // Error from tail
 }
 
 // NewLine returns a Line with present time.
 func NewLine(text string) *Line {
-	return &Line{text, time.Now(), nil}
+	return &Line{text, nil}
 }
 
 // SeekInfo represents arguments to `os.Seek`
@@ -165,30 +163,6 @@ func (tail *Tail) Offset() (offset int64) {
 	return atomic.LoadInt64(&(tail.offset))
 }
 
-// Return the file's current position, like stdio's ftell().
-// But this value is not very accurate.
-// it may readed one line in the chan(tail.Lines),
-// so it may lost one line.
-// func (tail *Tail) Tell() (offset int64, err error) {
-// 	if tail.file == nil {
-// 		return
-// 	}
-// 	offset, err = tail.file.Seek(0, os.SEEK_CUR)
-// 	if err != nil {
-// 		return
-// 	}
-//
-// 	tail.lk.Lock()
-// 	if tail.reader == nil {
-// 		tail.lk.Unlock()
-// 		return
-// 	}
-//
-// 	offset -= int64(tail.reader.Buffered())
-// 	tail.lk.Unlock()
-// 	return
-// }
-
 // Stop stops the tailing activity.
 func (tail *Tail) Stop() error {
 	tail.Kill(nil)
@@ -237,30 +211,6 @@ func (tail *Tail) reopen() error {
 	}
 	return nil
 }
-
-// func (tail *Tail) readLine() (string, error) {
-// 	//   tmpb := make([]byte, 1024 * 16)
-// 	tail.lk.Lock()
-// 	line, err := tail.reader.ReadString('\n')
-// 	//   line_slice, err := tail.reader.ReadBytes('\n')
-// 	//   line := string(line_slice)
-// 	// _,  err := tail.reader.Read(tmpb)
-// 	// line := string(tmpb)
-// 	tail.lk.Unlock()
-//
-// 	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
-//
-// 	if err != nil {
-// 		// Note ReadString "returns the data read before the error" in
-// 		// case of an error, including EOF, so we return it as is. The
-// 		// caller is expected to process it if err is EOF.
-// 		return line, err
-// 	}
-//
-// 	// line = strings.TrimRight(line, "\n")
-//
-// 	return line, err
-// }
 
 func (tail *Tail) _readLine() (string, error) {
 	tail.lk.Lock()
@@ -384,23 +334,21 @@ func (tail *Tail) tailFileSync() {
 
 		// Process `line` even if err is EOF.
 		if err == nil {
-			cooloff := !tail.sendLine(line)
-			if cooloff {
-				// Wait a second before seeking till the end of
-				// file when rate limit is reached.
-				msg := ("Too much log activity; waiting a second " +
-					"before resuming tailing")
-				tail.Lines <- &Line{msg, time.Now(), errors.New(msg)}
-				select {
-				case <-time.After(time.Second):
-				case <-tail.Dying():
-					return
-				}
-				if err := tail.seekEnd(); err != nil {
-					tail.Kill(err)
-					return
-				}
-			}
+			_ = !tail.sendLine(line)
+			// cooloff := !tail.sendLine(line)
+			// if cooloff {
+			// 	// Wait a second before seeking till the end of
+			// 	// file when rate limit is reached.
+			// 	select {
+			// 	case <-time.After(time.Second):
+			// 	case <-tail.Dying():
+			// 		return
+			// 	}
+			// 	if err := tail.seekEnd(); err != nil {
+			// 		tail.Kill(err)
+			// 		return
+			// 	}
+			// }
 		} else if err == io.EOF {
 			if !tail.Follow {
 				if line != "" {
@@ -524,8 +472,6 @@ func (tail *Tail) seekTo(pos SeekInfo) error {
 // sendLine sends the line(s) to Lines channel, splitting longer lines
 // if necessary. Return false if rate limit is reached.
 func (tail *Tail) sendLine(line string) bool {
-	// now := time.Now()
-	var now time.Time
 	// length := uint16(1)
 
 	// Split longer lines
@@ -533,12 +479,12 @@ func (tail *Tail) sendLine(line string) bool {
 		lines := util.PartitionString(line, tail.MaxLineSize)
 
 		for _, line := range lines {
-			tail.Lines <- &Line{line, now, nil}
+			tail.Lines <- &Line{line, nil}
 		}
 
 		// length = uint16(len(lines))
 	} else {
-		tail.Lines <- &Line{line, now, nil}
+		tail.Lines <- &Line{line, nil}
 	}
 
 	// tail.Lines <- &Line{line, now, nil}
