@@ -336,20 +336,6 @@ func (tail *Tail) tailFileSync() {
 		// Process `line` even if err is EOF.
 		if err == nil {
 			_ = !tail.sendLine(line)
-			// cooloff := !tail.sendLine(line)
-			// if cooloff {
-			// 	// Wait a second before seeking till the end of
-			// 	// file when rate limit is reached.
-			// 	select {
-			// 	case <-time.After(time.Second):
-			// 	case <-tail.Dying():
-			// 		return
-			// 	}
-			// 	if err := tail.seekEnd(); err != nil {
-			// 		tail.Kill(err)
-			// 		return
-			// 	}
-			// }
 		} else if err == io.EOF {
 			if !tail.Follow {
 				if line != "" {
@@ -543,17 +529,6 @@ func (tail *Tail) sendLine(line string) bool {
 	} else {
 		tail.Lines <- &Line{line, nil}
 	}
-
-	// tail.Lines <- &Line{line, now, nil}
-
-	// if tail.Config.RateLimiter != nil {
-	// 	ok := tail.Config.RateLimiter.Pour(length)
-	// 	if !ok {
-	// 		tail.Logger.Printf("Leaky bucket full (%v); entering 1s cooloff period.\n",
-	// 			tail.Filename)
-	// 		return false
-	// 	}
-	// }
 
 	return true
 }
