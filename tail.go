@@ -16,7 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/nagae-memooff/tail/ratelimiter"
+	"github.com/fujiwara/shapeio"
 	"github.com/nagae-memooff/tail/util"
 	"github.com/nagae-memooff/tail/watch"
 	"gopkg.in/tomb.v1"
@@ -58,14 +58,14 @@ type logger interface {
 // Config is used to specify how a file must be tailed.
 type Config struct {
 	// File-specifc
-	Location    *SeekInfo // Seek to this location before tailing
-	ReOpen      bool      // Reopen recreated files (tail -F)
-	MustExist   bool      // Fail early if the file does not exist
-	Poll        bool      // Poll for file changes instead of using inotify
-	Pipe        bool      // Is a named pipe (mkfifo)
-	RateLimiter *ratelimiter.LeakyBucket
+	Location  *SeekInfo // Seek to this location before tailing
+	ReOpen    bool      // Reopen recreated files (tail -F)
+	MustExist bool      // Fail early if the file does not exist
+	Poll      bool      // Poll for file changes instead of using inotify
+	Pipe      bool      // Is a named pipe (mkfifo)
 
 	// Generic IO
+	ReadLimit          int
 	Follow             bool // Continue looking for new lines (tail -f)
 	MaxLineSize        int  // If non-zero, split longer lines into multiple lines
 	LinesChannelLength int
@@ -81,8 +81,9 @@ type Tail struct {
 	Lines    chan *Line
 	Config
 
-	file   *os.File
-	reader *bufio.Reader
+	file        *os.File
+	reader      *bufio.Reader
+	limitreader *shapeio.Reader
 
 	watcher watch.FileWatcher
 	changes *watch.FileChanges
@@ -445,13 +446,73 @@ func (tail *Tail) waitForChanges() error {
 	panic("unreachable")
 }
 
+// TODO 调用此方法，则会判断是否整行，若不是，则read line并记录offset
+// 要考虑到有没有正则的两种情况
+// 先留空，想好怎么实现了再说
+func (tail *Tail) dropBrokenLine() (err error) {
+	// if tail.pre_read != "" {
+	// 	return
+	// }
+
+	// preread_bytes := 0
+
+	// if tail.regex != nil {
+	// 	// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
+	// 	for !tail.regex.MatchString(tail.pre_read) {
+	// 		tail.pre_read, err = tail.reader.ReadString('\n')
+	// 		preread_bytes += len(tail.pre_read)
+
+	// 		if err != nil {
+	// 			return
+	// 		}
+	// 	}
+
+	// } else {
+	// 	if tail.Offset() > 0 {
+	// 		tail.file.Seek(-1, os.SEEK_CUR)
+	// 		b := make([]byte, 1)
+	// 		_, err = tail.file.Read(b)
+	// 		if err != nil {
+	// 			return
+	// 		}
+
+	// 		if b[0] != '\n' {
+	// 			line, err := tail.reader.ReadString('\n')
+	// 			if err != nil {
+	// 				return err
+	// 			}
+
+	// 			preread_bytes = len(line)
+	// 		}
+	// 	}
+	// }
+
+	// tail.offset += int64(preread_bytes)
+
+	return
+}
+
 func (tail *Tail) openReader() {
-	if tail.MaxLineSize > 0 {
-		// add 2 to account for newline characters
-		tail.reader = bufio.NewReaderSize(tail.file, tail.MaxLineSize+2)
+	if tail.Config.ReadLimit > 0 {
+		tail.limitreader = shapeio.NewReader(tail.file)
+		tail.limitreader.SetRateLimit(float64(tail.Config.ReadLimit))
+
+		if tail.MaxLineSize > 0 {
+			// add 2 to account for newline characters
+			tail.reader = bufio.NewReaderSize(tail.limitreader, tail.MaxLineSize+2)
+		} else {
+			tail.reader = bufio.NewReader(tail.limitreader)
+		}
 	} else {
-		tail.reader = bufio.NewReader(tail.file)
+		if tail.MaxLineSize > 0 {
+			// add 2 to account for newline characters
+			tail.reader = bufio.NewReaderSize(tail.file, tail.MaxLineSize+2)
+		} else {
+			tail.reader = bufio.NewReader(tail.file)
+		}
 	}
+
+	tail.dropBrokenLine()
 }
 
 func (tail *Tail) seekEnd() error {
