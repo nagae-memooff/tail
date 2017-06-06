@@ -446,48 +446,44 @@ func (tail *Tail) waitForChanges() error {
 	panic("unreachable")
 }
 
-// TODO 调用此方法，则会判断是否整行，若不是，则read line并记录offset
-// 要考虑到有没有正则的两种情况
-// 先留空，想好怎么实现了再说
 func (tail *Tail) dropBrokenLine() (err error) {
-	// if tail.pre_read != "" {
-	// 	return
-	// }
+	if tail.pre_read != "" {
+		return
+	}
 
-	// preread_bytes := 0
+	preread_bytes := 0
+	defer atomic.AddInt64(&tail.offset, int64(preread_bytes))
 
-	// if tail.regex != nil {
-	// 	// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
-	// 	for !tail.regex.MatchString(tail.pre_read) {
-	// 		tail.pre_read, err = tail.reader.ReadString('\n')
-	// 		preread_bytes += len(tail.pre_read)
+	if tail.regex != nil {
+		// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
+		for !tail.regex.MatchString(tail.pre_read) {
+			tail.pre_read, err = tail.reader.ReadString('\n')
+			preread_bytes += len(tail.pre_read)
 
-	// 		if err != nil {
-	// 			return
-	// 		}
-	// 	}
+			if err != nil {
+				return
+			}
+		}
 
-	// } else {
-	// 	if tail.Offset() > 0 {
-	// 		tail.file.Seek(-1, os.SEEK_CUR)
-	// 		b := make([]byte, 1)
-	// 		_, err = tail.file.Read(b)
-	// 		if err != nil {
-	// 			return
-	// 		}
+	} else {
+		if tail.Offset() > 0 {
+			b := make([]byte, 1)
+			_, err = tail.file.ReadAt(b, tail.offset-1)
+			if err != nil {
+				return
+			}
 
-	// 		if b[0] != '\n' {
-	// 			line, err := tail.reader.ReadString('\n')
-	// 			if err != nil {
-	// 				return err
-	// 			}
+			if b[0] != '\n' {
+				line, err := tail.reader.ReadString('\n')
+				preread_bytes = len(line)
 
-	// 			preread_bytes = len(line)
-	// 		}
-	// 	}
-	// }
+				if err != nil {
+					return err
+				}
 
-	// tail.offset += int64(preread_bytes)
+			}
+		}
+	}
 
 	return
 }
