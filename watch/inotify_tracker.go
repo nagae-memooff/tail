@@ -226,9 +226,9 @@ func (shared *InotifyTracker) sendEvent(event fsnotify.Event) {
 		select {
 		case ch <- event:
 		case <-done:
-			logger.Println("sent %v but closed", event)
+			logger.Printf("sent %v but closed", event)
 		case <-time.After(time.Second):
-			logger.Println("sent %v but timeout", event)
+			logger.Printf("sent %v but timeout", event)
 		}
 	}
 }
