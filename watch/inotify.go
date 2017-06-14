@@ -11,6 +11,7 @@ import (
 	"github.com/nagae-memooff/tail/util"
 
 	"gopkg.in/fsnotify.v1"
+	//   "github.com/fsnotify/fsnotify"
 	"gopkg.in/tomb.v1"
 )
 

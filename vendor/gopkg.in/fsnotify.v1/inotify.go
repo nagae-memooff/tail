@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -249,7 +248,7 @@ func (w *Watcher) readEvents() {
 			event := newEvent(name, mask)
 
 			// Send the events that are not ignored on the events channel
-			if !event.ignoreLinux(mask) {
+			if mask&syscall.IN_IGNORED != syscall.IN_IGNORED {
 				select {
 				case w.Events <- event:
 				case <-w.done:
@@ -266,23 +265,14 @@ func (w *Watcher) readEvents() {
 // Certain types of events can be "ignored" and not sent over the Events
 // channel. Such as events marked ignore by the kernel, or MODIFY events
 // against files that do not exist.
-func (e *Event) ignoreLinux(mask uint32) bool {
-	// Ignore anything the inotify API says to ignore
-	if mask&syscall.IN_IGNORED == syscall.IN_IGNORED {
-		return true
-	}
-
-	// If the event is not a DELETE or RENAME, the file must exist.
-	// Otherwise the event is ignored.
-	// *Note*: this was put in place because it was seen that a MODIFY
-	// event was sent after the DELETE. This ignores that MODIFY and
-	// assumes a DELETE will come or has come if the file doesn't exist.
-	if !(e.Op&Remove == Remove || e.Op&Rename == Rename) {
-		_, statErr := os.Lstat(e.Name)
-		return os.IsNotExist(statErr)
-	}
-	return false
-}
+// func (e *Event) ignoreLinux(mask uint32) bool {
+// 	// Ignore anything the inotify API says to ignore
+// 	if mask&syscall.IN_IGNORED == syscall.IN_IGNORED {
+// 		return true
+// 	}
+//
+// 	return false
+// }
 
 // newEvent returns an platform-independent Event based on an inotify mask.
 func newEvent(name string, mask uint32) Event {

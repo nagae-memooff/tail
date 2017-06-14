@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 	// "strings"
 	"sync"
 	"sync/atomic"
@@ -66,8 +67,8 @@ type Config struct {
 
 	// Generic IO
 	ReadLimit          int
-	Follow             bool // Continue looking for new lines (tail -f)
-	MaxLineSize        int  // If non-zero, split longer lines into multiple lines
+	Follow             bool  // Continue looking for new lines (tail -f)
+	MaxLineSize        int64 // If non-zero, split longer lines into multiple lines
 	LinesChannelLength int
 
 	// Logger, when nil, is set to tail.DefaultLogger
@@ -77,8 +78,9 @@ type Config struct {
 }
 
 type Tail struct {
-	Filename string
-	Lines    chan *Line
+	Filename   string
+	Lines      chan *Line
+	line_bytes int64
 	Config
 
 	file        *os.File
@@ -162,6 +164,10 @@ func TailFile(filename string, config Config) (t *Tail, err error) {
 
 func (tail *Tail) Offset() (offset int64) {
 	return atomic.LoadInt64(&(tail.offset))
+}
+
+func (tail *Tail) AddLineBytes(value int64) {
+	atomic.AddInt64(&tail.line_bytes, value)
 }
 
 // Stop stops the tailing activity.
@@ -479,19 +485,9 @@ func (tail *Tail) openReader() {
 		tail.limitreader = shapeio.NewReader(tail.file)
 		tail.limitreader.SetRateLimit(float64(tail.Config.ReadLimit))
 
-		if tail.MaxLineSize > 0 {
-			// add 2 to account for newline characters
-			tail.reader = bufio.NewReaderSize(tail.limitreader, tail.MaxLineSize+2)
-		} else {
-			tail.reader = bufio.NewReader(tail.limitreader)
-		}
+		tail.reader = bufio.NewReader(tail.limitreader)
 	} else {
-		if tail.MaxLineSize > 0 {
-			// add 2 to account for newline characters
-			tail.reader = bufio.NewReaderSize(tail.file, tail.MaxLineSize+2)
-		} else {
-			tail.reader = bufio.NewReader(tail.file)
-		}
+		tail.reader = bufio.NewReader(tail.file)
 	}
 
 	tail.dropBrokenLine()
@@ -516,19 +512,14 @@ func (tail *Tail) seekTo(pos SeekInfo) error {
 // if necessary. Return false if rate limit is reached.
 func (tail *Tail) sendLine(line string) bool {
 	// length := uint16(1)
-
-	// Split longer lines
-	if tail.MaxLineSize > 0 && len(line) > tail.MaxLineSize {
-		lines := util.PartitionString(line, tail.MaxLineSize)
-
-		for _, line := range lines {
-			tail.Lines <- &Line{line, nil}
-		}
-
-		// length = uint16(len(lines))
-	} else {
-		tail.Lines <- &Line{line, nil}
+	for tail.line_bytes > tail.Config.MaxLineSize {
+		// TODO 删了
+		// fmt.Printf("wait: %d/%d\n", tail.line_bytes, tail.Config.MaxLineSize)
+		time.Sleep(time.Second)
 	}
+
+	tail.Lines <- &Line{line, nil}
+	tail.AddLineBytes(int64(len(line)))
 
 	return true
 }

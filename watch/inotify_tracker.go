@@ -14,6 +14,7 @@ import (
 	"github.com/nagae-memooff/tail/util"
 
 	"gopkg.in/fsnotify.v1"
+	//   "github.com/fsnotify/fsnotify"
 )
 
 type InotifyTracker struct {
@@ -116,7 +117,6 @@ func remove(winfo *watchInfo) error {
 	if watchNum == 0 {
 		delete(shared.watchNums, fname)
 	}
-	shared.mux.Unlock()
 
 	// If we were the last ones to watch this file, unsubscribe from inotify.
 	// This needs to happen after releasing the lock because fsnotify waits
@@ -128,8 +128,12 @@ func remove(winfo *watchInfo) error {
 			delete(shared.done, winfo.fname)
 			close(done)
 		}
+		shared.mux.Unlock()
 		return shared.watcher.Remove(fname)
+	} else {
+		shared.mux.Unlock()
 	}
+
 	shared.remove <- winfo
 	return nil
 }
@@ -254,6 +258,11 @@ func (shared *InotifyTracker) run() {
 			if !open {
 				return
 			}
+			// if !(event.Op&fsnotify.Remove == fsnotify.Remove || event.Op&fsnotify.Rename== fsnotify.Rename) {
+			// 	_, statErr := os.Lstat(event.Name)
+			// 	return os.IsNotExist(statErr)
+			// }
+
 			shared.sendEvent(event)
 
 		case err, open := <-shared.watcher.Errors:
