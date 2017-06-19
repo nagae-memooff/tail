@@ -225,16 +225,22 @@ func (shared *InotifyTracker) sendEvent(event fsnotify.Event) {
 
 	done := shared.done[name]
 	shared.mux.Unlock()
+	time.Sleep(10 * time.Millisecond)
 
 	if ch != nil && done != nil {
 		select {
 		case ch <- event:
+			// logger.Printf("sent %v succeed", event)
 		case <-done:
 			logger.Printf("sent %v but closed", event)
-		case <-time.After(time.Second):
+		case <-time.After(time.Millisecond * 10):
 			logger.Printf("sent %v but timeout", event)
 		}
 	}
+	// else {
+	//	logger.Printf("sent %v but nil", event)
+	// }
+
 }
 
 // run starts the goroutine in which the shared struct reads events from its

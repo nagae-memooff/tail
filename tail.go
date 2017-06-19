@@ -310,6 +310,7 @@ func (tail *Tail) tailFileSync() {
 			err               error
 		)
 
+		// TODO file.Seek 需要更改，一并去除buffer
 		if tail.Location.Whence == os.SEEK_END && tail.Location.Offset == 0 {
 			// 说明从末尾开始
 			offset, _ = tail.file.Seek(tail.Location.Offset, tail.Location.Whence)
@@ -513,9 +514,8 @@ func (tail *Tail) seekTo(pos SeekInfo) error {
 func (tail *Tail) sendLine(line string) bool {
 	// length := uint16(1)
 	for tail.line_bytes > tail.Config.MaxLineSize {
-		// TODO 删了
 		// fmt.Printf("wait: %d/%d\n", tail.line_bytes, tail.Config.MaxLineSize)
-		time.Sleep(time.Second)
+		time.Sleep(time.Millisecond * 100)
 	}
 
 	tail.Lines <- &Line{line, nil}

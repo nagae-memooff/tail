@@ -99,8 +99,20 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 			switch {
 			//With an open fd, unlink(fd) - inotify returns IN_ATTRIB (==fsnotify.Chmod)
 			case evt.Op&fsnotify.Chmod == fsnotify.Chmod:
-				if _, err := os.Stat(fw.Filename); err != nil {
+				// i, err := os.Stat(fw.Filename)
+				// if  err != nil {
+				// 	if !os.IsNotExist(err) {
+				// 		return
+				// 	}
+				// }
+				// fallthrough
+
+				_, err := os.Stat(fw.Filename)
+				if err == nil {
+					continue
+				} else {
 					if !os.IsNotExist(err) {
+						logger.Printf("stat %s error: %s", fw.Filename, err)
 						return
 					}
 				}
@@ -110,9 +122,13 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 				fallthrough
 
 			case evt.Op&fsnotify.Rename == fsnotify.Rename:
-				RemoveWatch(fw.Filename)
-				changes.NotifyDeleted()
-				return
+				_, err := os.Stat(fw.Filename)
+				if os.IsNotExist(err) {
+
+					RemoveWatch(fw.Filename)
+					changes.NotifyDeleted()
+					return
+				}
 
 			case evt.Op&fsnotify.Write == fsnotify.Write:
 				fi, err := os.Stat(fw.Filename)
