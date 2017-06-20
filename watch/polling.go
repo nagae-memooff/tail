@@ -113,6 +113,11 @@ func (fw *PollingFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 	return changes, nil
 }
 
+// TODO
+func (fw *PollingFileWatcher) SetInode(inode uint64) error {
+	return nil
+}
+
 func init() {
 	POLL_DURATION = 250 * time.Millisecond
 }

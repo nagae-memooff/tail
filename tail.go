@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 	// "strings"
 	"sync"
@@ -214,6 +215,12 @@ func (tail *Tail) reopen() error {
 			}
 			return fmt.Errorf("Unable to open file %s: %s", tail.Filename, err)
 		}
+
+		// TODO 这事儿不应该放这儿做，想办法优化
+		fi, _ := os.Stat(tail.Filename)
+		stat, _ := fi.Sys().(*syscall.Stat_t)
+
+		tail.watcher.SetInode(stat.Ino)
 		break
 	}
 	return nil

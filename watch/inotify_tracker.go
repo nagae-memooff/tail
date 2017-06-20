@@ -22,6 +22,7 @@ type InotifyTracker struct {
 	watcher   *fsnotify.Watcher
 	chans     map[string]chan fsnotify.Event
 	done      map[string]chan bool
+	inodes    map[string]uint64
 	watchNums map[string]int
 	watch     chan *watchInfo
 	remove    chan *watchInfo
@@ -48,6 +49,7 @@ var (
 			mux:       sync.Mutex{},
 			chans:     make(map[string]chan fsnotify.Event),
 			done:      make(map[string]chan bool),
+			inodes:    make(map[string]uint64),
 			watchNums: make(map[string]int),
 			watch:     make(chan *watchInfo),
 			remove:    make(chan *watchInfo),
@@ -141,11 +143,11 @@ func remove(winfo *watchInfo) error {
 // Events returns a channel to which FileEvents corresponding to the input filename
 // will be sent. This channel will be closed when removeWatch is called on this
 // filename.
-func Events(fname string) <-chan fsnotify.Event {
+func Events(fname string) (<-chan fsnotify.Event, uint64) {
 	shared.mux.Lock()
 	defer shared.mux.Unlock()
 
-	return shared.chans[fname]
+	return shared.chans[fname], shared.inodes[fname]
 }
 
 // Cleanup removes the watch for the input filename if necessary.
@@ -225,7 +227,6 @@ func (shared *InotifyTracker) sendEvent(event fsnotify.Event) {
 
 	done := shared.done[name]
 	shared.mux.Unlock()
-	time.Sleep(10 * time.Millisecond)
 
 	if ch != nil && done != nil {
 		select {
@@ -233,7 +234,7 @@ func (shared *InotifyTracker) sendEvent(event fsnotify.Event) {
 			// logger.Printf("sent %v succeed", event)
 		case <-done:
 			logger.Printf("sent %v but closed", event)
-		case <-time.After(time.Millisecond * 10):
+		case <-time.After(time.Millisecond * 5):
 			logger.Printf("sent %v but timeout", event)
 		}
 	}

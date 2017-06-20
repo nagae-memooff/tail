@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/nagae-memooff/tail/util"
 
@@ -26,6 +27,16 @@ func NewInotifyFileWatcher(filename string) *InotifyFileWatcher {
 	return fw
 }
 
+func (fw *InotifyFileWatcher) SetInode(inode uint64) error {
+	once.Do(goRun)
+
+	shared.mux.Lock()
+	defer shared.mux.Unlock()
+
+	shared.inodes[fw.Filename] = inode
+	return nil
+}
+
 func (fw *InotifyFileWatcher) BlockUntilExists(t *tomb.Tomb) error {
 	err := WatchCreate(fw.Filename)
 	if err != nil {
@@ -37,10 +48,11 @@ func (fw *InotifyFileWatcher) BlockUntilExists(t *tomb.Tomb) error {
 	// calling `WatchFlags` above.
 	if _, err = os.Stat(fw.Filename); !os.IsNotExist(err) {
 		// file exists, or stat returned an error.
+		logger.Printf("err: %v", err)
 		return err
 	}
 
-	events := Events(fw.Filename)
+	events, _ := Events(fw.Filename)
 
 	for {
 		select {
@@ -58,8 +70,16 @@ func (fw *InotifyFileWatcher) BlockUntilExists(t *tomb.Tomb) error {
 				return err
 			}
 			if evtName == fwFilename {
+				fi, err := os.Stat(fwFilename)
+				if err == nil {
+					stat, ok := fi.Sys().(*syscall.Stat_t)
+					if ok {
+						shared.inodes[fw.Filename] = stat.Ino
+					}
+				}
 				return nil
 			}
+
 		case <-t.Dying():
 			return tomb.ErrDying
 		}
@@ -77,7 +97,7 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 	fw.Size = pos
 
 	go func() {
-		events := Events(fw.Filename)
+		events, inode := Events(fw.Filename)
 
 		for {
 			prevSize := fw.Size
@@ -107,30 +127,38 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 				// }
 				// fallthrough
 
-				_, err := os.Stat(fw.Filename)
-				if err == nil {
-					continue
-				} else {
-					if !os.IsNotExist(err) {
-						logger.Printf("stat %s error: %s", fw.Filename, err)
-						return
-					}
-				}
+				// _, err := os.Stat(fw.Filename)
+				// if err == nil {
+				// 	continue
+				// } else {
+				// 	if !os.IsNotExist(err) {
+				// 		logger.Printf("stat %s error: %s", fw.Filename, err)
+				// 		return
+				// 	}
+				// }
 				fallthrough
 
 			case evt.Op&fsnotify.Remove == fsnotify.Remove:
 				fallthrough
 
 			case evt.Op&fsnotify.Rename == fsnotify.Rename:
-				_, err := os.Stat(fw.Filename)
+				fi, err := os.Stat(fw.Filename)
 				if os.IsNotExist(err) {
-
 					RemoveWatch(fw.Filename)
 					changes.NotifyDeleted()
 					return
+				} else {
+					stat, ok := fi.Sys().(*syscall.Stat_t)
+					if ok && stat.Ino != inode {
+						RemoveWatch(fw.Filename)
+						changes.NotifyDeleted()
+						return
+					}
 				}
 
 			case evt.Op&fsnotify.Write == fsnotify.Write:
+				// TODO 精简这里的系统调用
+				// changes.NotifyModified()
 				fi, err := os.Stat(fw.Filename)
 				if err != nil {
 					if os.IsNotExist(err) {
