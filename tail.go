@@ -246,6 +246,8 @@ func (tail *Tail) _readXLine() (line string, err error) {
 	tail.lk.Lock()
 	defer tail.lk.Unlock()
 
+	mline := make([]string, 0, 16)
+
 	if tail.pre_read == "" {
 		// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
 		for !tail.regex.MatchString(tail.pre_read) {
@@ -270,7 +272,7 @@ func (tail *Tail) _readXLine() (line string, err error) {
 
 	} else {
 		// 若不包含，说明是异常日志，开启多行模式
-		mline := []string{tail.pre_read, nextline}
+		mline = append(mline, tail.pre_read, nextline)
 
 		for {
 			line, err := tail.reader.ReadString('\n')
@@ -289,6 +291,7 @@ func (tail *Tail) _readXLine() (line string, err error) {
 
 		// 此时 mline里是一条数据， pre_read是下一条数据
 		line = strings.Join(mline, "")
+		mline = mline[:0]
 	}
 
 	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
