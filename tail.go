@@ -5,13 +5,14 @@ package tail
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
-	"strings"
+	// "strings"
 	"syscall"
 	"time"
 	// "strings"
@@ -246,8 +247,6 @@ func (tail *Tail) _readXLine() (line string, err error) {
 	tail.lk.Lock()
 	defer tail.lk.Unlock()
 
-	mline := make([]string, 0, 16)
-
 	if tail.pre_read == "" {
 		// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
 		for !tail.regex.MatchString(tail.pre_read) {
@@ -272,26 +271,53 @@ func (tail *Tail) _readXLine() (line string, err error) {
 
 	} else {
 		// 若不包含，说明是异常日志，开启多行模式
-		mline = append(mline, tail.pre_read, nextline)
+		// 	mline := make([]string, 0, 16)
+		// 	mline = append(mline, tail.pre_read, nextline)
+
+		// 	for {
+		// 		line, err := tail.reader.ReadString('\n')
+		// 		if err != nil {
+		// 			line = "wait"
+		// 			return line, err
+		// 		}
+
+		// 		if !tail.regex.MatchString(line) {
+		// 			mline = append(mline, line)
+		// 		} else {
+		// 			tail.pre_read = line
+		// 			break
+		// 		}
+		// 	}
+		// 	// 此时 mline里是一条数据， pre_read是下一条数据
+		// 	line = strings.Join(mline, "")
+		// 	mline = mline[:0]
+
+		mbuffer := bytes.NewBuffer(make([]byte, 0, 4096))
+		mbuffer.WriteString(tail.pre_read)
+		mbuffer.WriteString(nextline)
 
 		for {
-			line, err := tail.reader.ReadString('\n')
+			line, err := tail.reader.ReadSlice('\n')
 			if err != nil {
-				line = "wait"
-				return line, err
+				return "wait", err
 			}
 
-			if !tail.regex.MatchString(line) {
-				mline = append(mline, line)
+			line_str := string(line)
+
+			if !tail.regex.MatchString(line_str) {
+				mbuffer.Write(line)
 			} else {
-				tail.pre_read = line
+				copy_line := make([]byte, len(line))
+				for i, b := range line {
+					copy_line[i] = b
+				}
+
+				tail.pre_read = string(copy_line)
 				break
 			}
 		}
 
-		// 此时 mline里是一条数据， pre_read是下一条数据
-		line = strings.Join(mline, "")
-		mline = mline[:0]
+		line = string(mbuffer.Bytes())
 	}
 
 	tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
