@@ -217,7 +217,6 @@ func (tail *Tail) reopen() error {
 			return fmt.Errorf("Unable to open file %s: %s", tail.Filename, err)
 		}
 
-		// TODO 这事儿不应该放这儿做，想办法优化
 		fi, _ := os.Stat(tail.Filename)
 		stat, _ := fi.Sys().(*syscall.Stat_t)
 
@@ -299,6 +298,7 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		for {
 			line, err := tail.reader.ReadSlice('\n')
 			if err != nil {
+				tail.pre_read = ""
 				return "wait", err
 			}
 
@@ -346,7 +346,6 @@ func (tail *Tail) tailFileSync() {
 			err               error
 		)
 
-		// TODO file.Seek 需要更改，一并去除buffer
 		if tail.Location.Whence == os.SEEK_END && tail.Location.Offset == 0 {
 			// 说明从末尾开始
 			offset, _ = tail.file.Seek(tail.Location.Offset, tail.Location.Whence)
