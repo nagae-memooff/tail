@@ -229,13 +229,23 @@ func (shared *InotifyTracker) sendEvent(event fsnotify.Event) {
 	shared.mux.Unlock()
 
 	if ch != nil && done != nil {
-		select {
-		case ch <- event:
-			// logger.Printf("sent %v succeed", event)
-		case <-done:
-			logger.Printf("sent %v but closed", event)
-		case <-time.After(time.Millisecond * 5):
-			logger.Printf("sent %v but timeout", event)
+		if event.Op&fsnotify.Write == fsnotify.Write {
+			select {
+			case ch <- event:
+				// logger.Printf("sent %v succeed", event)
+			case <-done:
+				logger.Printf("sent %v but closed", event)
+			default:
+			}
+		} else {
+			select {
+			case ch <- event:
+				// logger.Printf("sent %v succeed", event)
+			case <-done:
+				logger.Printf("sent %v but closed", event)
+			case <-time.After(time.Millisecond * 10):
+				logger.Printf("sent %v but timeout", event)
+			}
 		}
 	}
 	// else {
