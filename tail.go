@@ -20,14 +20,31 @@ import (
 	"sync/atomic"
 
 	"github.com/fujiwara/shapeio"
+	utils "github.com/nagae-memooff/goutils"
 	"github.com/nagae-memooff/tail/util"
 	"github.com/nagae-memooff/tail/watch"
 	"gopkg.in/tomb.v1"
 	"regexp"
 )
 
+func init() {
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			mem_usage, err := utils.GetMemUsage()
+			if err != nil {
+				continue
+			}
+
+			atomic.StoreInt64(&mem, int64(mem_usage))
+		}
+	}()
+}
+
 var (
-	ErrStop = errors.New("tail should now stop")
+	ErrStop   = errors.New("tail should now stop")
+	mem       int64
+	mem_limit int64 = 200 * 1048576
 )
 
 type Line struct {
@@ -419,6 +436,10 @@ func (tail *Tail) tailFileSync() {
 			}
 			return
 		default:
+
+			if WaitIfOutOfMemory() {
+				continue
+			}
 		}
 	}
 }
@@ -564,4 +585,15 @@ func (tail *Tail) sendLine(line string) bool {
 // automatically remove inotify watches after the process exits.
 func (tail *Tail) Cleanup() {
 	watch.Cleanup(tail.Filename)
+}
+
+func WaitIfOutOfMemory() bool {
+	_mem := atomic.LoadInt64(&mem)
+	if _mem > mem_limit {
+		log.Printf("mem is overlimit: %d, wait a second.", _mem)
+		time.Sleep(time.Second)
+		return true
+	}
+
+	return false
 }
