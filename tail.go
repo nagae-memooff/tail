@@ -113,6 +113,7 @@ type Tail struct {
 
 	lk     sync.Mutex
 	offset int64
+	inode  uint64
 
 	readLine func() (string, error)
 	regex    *regexp.Regexp
@@ -237,6 +238,7 @@ func (tail *Tail) reopen() error {
 		fi, _ := os.Stat(tail.Filename)
 		stat, _ := fi.Sys().(*syscall.Stat_t)
 
+		tail.inode = stat.Ino
 		tail.watcher.SetInode(stat.Ino)
 		break
 	}
@@ -345,6 +347,9 @@ func (tail *Tail) tailFileSync() {
 	defer tail.Done()
 	defer tail.close()
 
+	ticker := time.NewTicker(time.Second * 10)
+	defer ticker.Stop()
+
 	if !tail.MustExist {
 		// deferred first open.
 		err := tail.reopen()
@@ -390,55 +395,90 @@ func (tail *Tail) tailFileSync() {
 
 	// Read line by line.
 	for {
-		line, err := tail.readLine()
+		select {
+		case <-ticker.C:
+			// 检查
+			will_reopen := false
 
-		// Process `line` even if err is EOF.
-		if err == nil {
-			_ = !tail.sendLine(line)
-		} else if err == io.EOF {
-			if !tail.Follow {
-				if line != "" {
-					tail.sendLine(line)
+			fi, err := os.Stat(tail.Filename)
+			if os.IsNotExist(err) {
+				will_reopen = true
+
+			} else {
+				stat, ok := fi.Sys().(*syscall.Stat_t)
+				if ok && stat.Ino != tail.inode {
+					will_reopen = true
 				}
-				return
 			}
 
-			if tail.Follow && line != "" {
-				// this has the potential to never return the last line if
-				// it's not followed by a newline; seems a fair trade here
-				err := tail.seekTo(SeekInfo{Offset: tail.offset, Whence: 0})
-				if err != nil {
-					tail.Kill(err)
+			if !will_reopen {
+				continue
+			}
+
+			// HERE
+			tail.changes = nil
+			tail.Logger.Printf("Re-opening moved/deleted file %s ...", tail.Filename)
+			if err := tail.reopen(); err != nil {
+				continue
+			}
+
+			tail.Logger.Printf("Successfully reopened %s", tail.Filename)
+			atomic.StoreInt64(&tail.offset, 0)
+			tail.openReader()
+			tail.pre_read = ""
+
+		default:
+			line, err := tail.readLine()
+
+			// Process `line` even if err is EOF.
+			if err == nil {
+				_ = tail.sendLine(line)
+			} else if err == io.EOF {
+				if !tail.Follow {
+					if line != "" {
+						tail.sendLine(line)
+					}
 					return
 				}
-			}
 
-			// When EOF is reached, wait for more data to become
-			// available. Wait strategy is based on the `tail.watcher`
-			// implementation (inotify or polling).
-			err := tail.waitForChanges()
-			if err != nil {
-				if err != ErrStop {
-					tail.Kill(err)
+				if tail.Follow && line != "" {
+					// this has the potential to never return the last line if
+					// it's not followed by a newline; seems a fair trade here
+					err := tail.seekTo(SeekInfo{Offset: tail.offset, Whence: 0})
+					if err != nil {
+						tail.Kill(err)
+						return
+					}
+				} else if tail.Follow && line == "" {
+					// TODO 说明被截断了？
 				}
+
+				// When EOF is reached, wait for more data to become
+				// available. Wait strategy is based on the `tail.watcher`
+				// implementation (inotify or polling).
+				err := tail.waitForChanges()
+				if err != nil {
+					if err != ErrStop {
+						tail.Kill(err)
+					}
+					return
+				}
+			} else {
+				// non-EOF error
+				tail.Killf("Error reading %s: %s", tail.Filename, err)
 				return
 			}
-		} else {
-			// non-EOF error
-			tail.Killf("Error reading %s: %s", tail.Filename, err)
-			return
-		}
 
-		select {
-		case <-tail.Dying():
-			if tail.Err() == errStopAtEOF {
-				continue
-			}
-			return
-		default:
-
-			if WaitIfOutOfMemory() {
-				continue
+			select {
+			case <-tail.Dying():
+				if tail.Err() == errStopAtEOF {
+					continue
+				}
+				return
+			default:
+				if WaitIfOutOfMemory() {
+					continue
+				}
 			}
 		}
 	}
@@ -491,6 +531,8 @@ func (tail *Tail) waitForChanges() error {
 		return nil
 	case <-tail.Dying():
 		return ErrStop
+	case <-time.After(time.Second):
+		return nil
 	}
 	panic("unreachable")
 }
@@ -501,13 +543,19 @@ func (tail *Tail) dropBrokenLine() (err error) {
 	}
 
 	preread_bytes := 0
-	defer atomic.AddInt64(&tail.offset, int64(preread_bytes))
+	defer func() {
+		fmt.Printf("preread: %d\n", preread_bytes)
+		pos, _ := tail.file.Seek(0, os.SEEK_CUR)
+		tail.offset = pos - int64(tail.reader.Buffered()) - int64(preread_bytes)
+
+		//     atomic.AddInt64(&tail.offset, int64(preread_bytes))
+	}()
 
 	if tail.regex != nil {
 		// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
 		for !tail.regex.MatchString(tail.pre_read) {
 			tail.pre_read, err = tail.reader.ReadString('\n')
-			preread_bytes += len(tail.pre_read)
+			preread_bytes = len(tail.pre_read)
 
 			if err != nil {
 				return

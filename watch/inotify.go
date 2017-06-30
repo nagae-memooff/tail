@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/nagae-memooff/tail/util"
+	// "github.com/nagae-memooff/tail/util"
 
 	"gopkg.in/fsnotify.v1"
 	//   "github.com/fsnotify/fsnotify"
 	"gopkg.in/tomb.v1"
+	"time"
 )
 
 // InotifyFileWatcher uses inotify to monitor file changes.
@@ -98,9 +99,12 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 
 	go func() {
 		events, inode := Events(fw.Filename)
+		ticker := time.NewTicker(time.Second)
+
+		defer ticker.Stop()
 
 		for {
-			prevSize := fw.Size
+			// prevSize := fw.Size
 
 			var evt fsnotify.Event
 			var ok bool
@@ -114,6 +118,23 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 			case <-t.Dying():
 				RemoveWatch(fw.Filename)
 				return
+			case <-ticker.C:
+
+				fi, err := os.Stat(fw.Filename)
+				if os.IsNotExist(err) {
+					RemoveWatch(fw.Filename)
+					changes.NotifyDeleted()
+					return
+				} else {
+					stat, ok := fi.Sys().(*syscall.Stat_t)
+					if ok && stat.Ino != inode {
+						RemoveWatch(fw.Filename)
+						changes.NotifyDeleted()
+						return
+					}
+				}
+
+				continue
 			}
 
 			switch {
@@ -158,25 +179,25 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 
 			case evt.Op&fsnotify.Write == fsnotify.Write:
 				// TODO 精简这里的系统调用
-				// changes.NotifyModified()
-				fi, err := os.Stat(fw.Filename)
-				if err != nil {
-					if os.IsNotExist(err) {
-						RemoveWatch(fw.Filename)
-						changes.NotifyDeleted()
-						return
-					}
-					// XXX: report this error back to the user
-					util.Fatal("Failed to stat file %v: %v", fw.Filename, err)
-				}
-				fw.Size = fi.Size()
+				changes.NotifyModified()
+				// fi, err := os.Stat(fw.Filename)
+				// if err != nil {
+				// 	if os.IsNotExist(err) {
+				// 		RemoveWatch(fw.Filename)
+				// 		changes.NotifyDeleted()
+				// 		return
+				// 	}
+				// 	// XXX: report this error back to the user
+				// 	util.Fatal("Failed to stat file %v: %v", fw.Filename, err)
+				// }
+				// fw.Size = fi.Size()
 
-				if prevSize > 0 && prevSize > fw.Size {
-					changes.NotifyTruncated()
-				} else {
-					changes.NotifyModified()
-				}
-				prevSize = fw.Size
+				// if prevSize > 0 && prevSize > fw.Size {
+				// 	changes.NotifyTruncated()
+				// } else {
+				// 	changes.NotifyModified()
+				// }
+				// prevSize = fw.Size
 			}
 		}
 	}()
