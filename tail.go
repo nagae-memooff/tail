@@ -317,7 +317,9 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		for {
 			line, err := tail.reader.ReadSlice('\n')
 			if err != nil {
-				tail.pre_read = ""
+				// fmt.Printf("pre read: '%s' \n", tail.pre_read)
+				mbuffer.Write(line)
+				tail.pre_read = string(mbuffer.Bytes())
 				return "wait", err
 			}
 
@@ -406,7 +408,7 @@ func (tail *Tail) tailFileSync() {
 
 			} else {
 				stat, ok := fi.Sys().(*syscall.Stat_t)
-				if ok && stat.Ino != tail.inode {
+				if (ok && stat.Ino != tail.inode) || fi.Size() < tail.offset {
 					will_reopen = true
 				}
 			}
@@ -417,7 +419,7 @@ func (tail *Tail) tailFileSync() {
 
 			// HERE
 			tail.changes = nil
-			tail.Logger.Printf("Re-opening moved/deleted file %s ...", tail.Filename)
+			tail.Logger.Printf("Re-opening file %s ...", tail.Filename)
 			if err := tail.reopen(); err != nil {
 				continue
 			}
@@ -425,7 +427,7 @@ func (tail *Tail) tailFileSync() {
 			tail.Logger.Printf("Successfully reopened %s", tail.Filename)
 			atomic.StoreInt64(&tail.offset, 0)
 			tail.openReader()
-			tail.pre_read = ""
+			// tail.pre_read = ""
 
 		default:
 			line, err := tail.readLine()
@@ -441,7 +443,7 @@ func (tail *Tail) tailFileSync() {
 					return
 				}
 
-				if tail.Follow && line != "" {
+				if tail.Follow && line != "" && tail.regex == nil {
 					// this has the potential to never return the last line if
 					// it's not followed by a newline; seems a fair trade here
 					err := tail.seekTo(SeekInfo{Offset: tail.offset, Whence: 0})
@@ -544,11 +546,11 @@ func (tail *Tail) dropBrokenLine() (err error) {
 
 	preread_bytes := 0
 	defer func() {
-		fmt.Printf("preread: %d\n", preread_bytes)
+		// fmt.Printf("preread: %d\n", preread_bytes)
 		pos, _ := tail.file.Seek(0, os.SEEK_CUR)
 		tail.offset = pos - int64(tail.reader.Buffered()) - int64(preread_bytes)
 
-		//     atomic.AddInt64(&tail.offset, int64(preread_bytes))
+		// atomic.AddInt64(&tail.offset, int64(preread_bytes))
 	}()
 
 	if tail.regex != nil {
