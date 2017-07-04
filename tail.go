@@ -315,7 +315,7 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		mbuffer.WriteString(nextline)
 
 		for {
-			line, err := tail.reader.ReadSlice('\n')
+			line, err := tail.reader.ReadBytes('\n')
 			if err != nil {
 				// fmt.Printf("pre read: '%s' \n", tail.pre_read)
 				mbuffer.Write(line)
