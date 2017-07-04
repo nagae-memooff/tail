@@ -36,15 +36,15 @@ func init() {
 				continue
 			}
 
-			atomic.StoreInt64(&mem, int64(mem_usage))
+			atomic.StoreInt64(&Mem, int64(mem_usage))
 		}
 	}()
 }
 
 var (
-	ErrStop   = errors.New("tail should now stop")
-	mem       int64
-	mem_limit int64 = 200 * 1048576
+	ErrStop  = errors.New("tail should now stop")
+	Mem      int64
+	MemLimit int64 = 200 * 1048576
 )
 
 type Line struct {
@@ -638,8 +638,8 @@ func (tail *Tail) Cleanup() {
 }
 
 func WaitIfOutOfMemory() bool {
-	_mem := atomic.LoadInt64(&mem)
-	if _mem > mem_limit {
+	_mem := atomic.LoadInt64(&Mem)
+	if _mem > MemLimit {
 		log.Printf("mem is overlimit: %d, wait a second.", _mem)
 		time.Sleep(time.Second)
 		return true
