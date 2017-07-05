@@ -247,8 +247,15 @@ func (tail *Tail) reopen() error {
 
 func (tail *Tail) _readLine() (string, error) {
 	tail.lk.Lock()
-	line, err := tail.reader.ReadString('\n')
-	tail.lk.Unlock()
+	defer tail.lk.Unlock()
+
+	sline, err := tail.reader.ReadSlice('\n')
+	if err == bufio.ErrBufferFull {
+		tail.offset = atomic.AddInt64(&(tail.offset), int64(len(sline)))
+		return "", err
+	}
+
+	line := CopyBytesToString(sline)
 
 	if err != nil {
 		// Note ReadString "returns the data read before the error" in
@@ -264,21 +271,36 @@ func (tail *Tail) _readLine() (string, error) {
 func (tail *Tail) _readXLine() (line string, err error) {
 	tail.lk.Lock()
 	defer tail.lk.Unlock()
+	var sline []byte
 
 	if tail.pre_read == "" {
 		// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
 		for !tail.regex.MatchString(tail.pre_read) {
-			tail.pre_read, err = tail.reader.ReadString('\n')
+			sline, err = tail.reader.ReadSlice('\n')
+			if err == bufio.ErrBufferFull {
+				tail.offset = atomic.AddInt64(&(tail.offset), int64(len(sline)))
+				continue
+			}
+
+			line := CopyBytesToString(sline)
+			tail.pre_read = line
 			if err != nil {
-				return line, err
+				return "", err
 			}
 		}
 	}
 
-	nextline, err := tail.reader.ReadString('\n')
-	if err != nil {
-		return line, err
+	sline, err = tail.reader.ReadSlice('\n')
+	if err == bufio.ErrBufferFull {
+		tail.offset = atomic.AddInt64(&(tail.offset), int64(len(sline)))
+		return "", err
 	}
+
+	if err != nil {
+		return "", err
+	}
+
+	nextline := CopyBytesToString(sline)
 
 	if tail.regex.MatchString(nextline) {
 		line = tail.pre_read
@@ -315,7 +337,12 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		mbuffer.WriteString(nextline)
 
 		for {
-			line, err := tail.reader.ReadBytes('\n')
+			line, err := tail.reader.ReadSlice('\n')
+			if err == bufio.ErrBufferFull {
+				tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
+				continue
+			}
+
 			if err != nil {
 				// fmt.Printf("pre read: '%s' \n", tail.pre_read)
 				mbuffer.Write(line)
@@ -328,12 +355,12 @@ func (tail *Tail) _readXLine() (line string, err error) {
 			if !tail.regex.MatchString(line_str) {
 				mbuffer.Write(line)
 			} else {
-				copy_line := make([]byte, len(line))
-				for i, b := range line {
-					copy_line[i] = b
-				}
+				// copy_line := make([]byte, len(line))
+				// for i, b := range line {
+				// 	copy_line[i] = b
+				// }
 
-				tail.pre_read = string(copy_line)
+				tail.pre_read = CopyBytesToString(line)
 				break
 			}
 		}
@@ -383,6 +410,11 @@ func (tail *Tail) tailFileSync() {
 				// 说明文件被悄悄地截断过，从末尾开始读即可
 				tail.file.Seek(0, os.SEEK_END)
 				tail.offset = file_size
+			} else if tail.Location.Offset < 0 && tail.Location.Whence == os.SEEK_SET {
+				// 若为负数，说明是上一次logrotate后，未产生新的日志。这种情况下pre_read会被丢弃，且留下一个负数offset。
+				// 此时需要将offset归零
+				tail.file.Seek(0, os.SEEK_SET)
+				tail.offset = 0
 			}
 		}
 
@@ -425,7 +457,8 @@ func (tail *Tail) tailFileSync() {
 			}
 
 			tail.Logger.Printf("Successfully reopened %s", tail.Filename)
-			atomic.StoreInt64(&tail.offset, 0)
+			// atomic.StoreInt64(&tail.offset, 0)
+			atomic.StoreInt64(&tail.offset, int64(-len(tail.pre_read)))
 			tail.openReader()
 			// tail.pre_read = ""
 
@@ -452,7 +485,7 @@ func (tail *Tail) tailFileSync() {
 						return
 					}
 				} else if tail.Follow && line == "" {
-					// TODO 说明被截断了？
+					// TODO 不一定说明被截断了，也可能是preread的时候
 				}
 
 				// When EOF is reached, wait for more data to become
@@ -465,6 +498,8 @@ func (tail *Tail) tailFileSync() {
 					}
 					return
 				}
+			} else if err == bufio.ErrBufferFull {
+				tail.Logger.Println("line to large. aborted.")
 			} else {
 				// non-EOF error
 				tail.Killf("Error reading %s: %s", tail.Filename, err)
@@ -512,9 +547,9 @@ func (tail *Tail) waitForChanges() error {
 			if err := tail.reopen(); err != nil {
 				return err
 			}
+			atomic.StoreInt64(&tail.offset, int64(-len(tail.pre_read)))
 
 			tail.Logger.Printf("Successfully reopened %s", tail.Filename)
-			atomic.StoreInt64(&tail.offset, 0)
 			tail.openReader()
 			return nil
 		} else {
@@ -553,10 +588,17 @@ func (tail *Tail) dropBrokenLine() (err error) {
 		// atomic.AddInt64(&tail.offset, int64(preread_bytes))
 	}()
 
+	var sline []byte
+
 	if tail.regex != nil {
 		// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
 		for !tail.regex.MatchString(tail.pre_read) {
-			tail.pre_read, err = tail.reader.ReadString('\n')
+			sline, err = tail.reader.ReadSlice('\n')
+			if err == bufio.ErrBufferFull {
+				log.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
+				continue
+			}
+			tail.pre_read = CopyBytesToString(sline)
 			preread_bytes = len(tail.pre_read)
 
 			if err != nil {
@@ -573,11 +615,17 @@ func (tail *Tail) dropBrokenLine() (err error) {
 			}
 
 			if b[0] != '\n' {
-				line, err := tail.reader.ReadString('\n')
+				sline, err = tail.reader.ReadSlice('\n')
+				if err == bufio.ErrBufferFull {
+					log.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
+					return
+				}
+
+				line := CopyBytesToString(sline)
 				preread_bytes = len(line)
 
 				if err != nil {
-					return err
+					return
 				}
 
 			}
@@ -592,9 +640,9 @@ func (tail *Tail) openReader() {
 		tail.limitreader = shapeio.NewReader(tail.file)
 		tail.limitreader.SetRateLimit(float64(tail.Config.ReadLimit))
 
-		tail.reader = bufio.NewReader(tail.limitreader)
+		tail.reader = bufio.NewReaderSize(tail.limitreader, 1*1048576)
 	} else {
-		tail.reader = bufio.NewReader(tail.file)
+		tail.reader = bufio.NewReaderSize(tail.file, 1*1048576)
 	}
 
 	tail.dropBrokenLine()
@@ -619,6 +667,10 @@ func (tail *Tail) seekTo(pos SeekInfo) error {
 // if necessary. Return false if rate limit is reached.
 func (tail *Tail) sendLine(line string) bool {
 	// length := uint16(1)
+	if line == "" {
+		return false
+	}
+
 	for tail.line_bytes > tail.Config.MaxLineSize {
 		// fmt.Printf("wait: %d/%d\n", tail.line_bytes, tail.Config.MaxLineSize)
 		time.Sleep(time.Millisecond * 100)
@@ -646,4 +698,12 @@ func WaitIfOutOfMemory() bool {
 	}
 
 	return false
+}
+
+func CopyBytesToString(src []byte) (s string) {
+	dst := make([]byte, len(src))
+	copy(dst, src)
+
+	s = string(dst)
+	return
 }
