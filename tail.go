@@ -251,6 +251,7 @@ func (tail *Tail) _readLine() (string, error) {
 
 	sline, err := tail.reader.ReadSlice('\n')
 	if err == bufio.ErrBufferFull {
+		tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 		tail.offset = atomic.AddInt64(&(tail.offset), int64(len(sline)))
 		return "", err
 	}
@@ -278,6 +279,7 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		for !tail.regex.MatchString(tail.pre_read) {
 			sline, err = tail.reader.ReadSlice('\n')
 			if err == bufio.ErrBufferFull {
+				tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 				tail.offset = atomic.AddInt64(&(tail.offset), int64(len(sline)))
 				continue
 			}
@@ -292,6 +294,7 @@ func (tail *Tail) _readXLine() (line string, err error) {
 
 	sline, err = tail.reader.ReadSlice('\n')
 	if err == bufio.ErrBufferFull {
+		tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 		tail.offset = atomic.AddInt64(&(tail.offset), int64(len(sline)))
 		return "", err
 	}
@@ -336,9 +339,11 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		mbuffer.WriteString(tail.pre_read)
 		mbuffer.WriteString(nextline)
 
+		// FIXME 读完之前无法中断。考虑是否有办法做得好一点？
 		for {
 			line, err := tail.reader.ReadSlice('\n')
 			if err == bufio.ErrBufferFull {
+				tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 				tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
 				continue
 			}
@@ -373,11 +378,13 @@ func (tail *Tail) _readXLine() (line string, err error) {
 }
 
 func (tail *Tail) tailFileSync() {
-	defer tail.Done()
-	defer tail.close()
 
 	ticker := time.NewTicker(time.Second * 10)
-	defer ticker.Stop()
+	defer func() {
+		tail.Done()
+		tail.close()
+		ticker.Stop()
+	}()
 
 	if !tail.MustExist {
 		// deferred first open.
@@ -499,7 +506,7 @@ func (tail *Tail) tailFileSync() {
 					return
 				}
 			} else if err == bufio.ErrBufferFull {
-				tail.Logger.Println("line to large. aborted.")
+				tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 			} else {
 				// non-EOF error
 				tail.Killf("Error reading %s: %s", tail.Filename, err)
@@ -513,7 +520,7 @@ func (tail *Tail) tailFileSync() {
 				}
 				return
 			default:
-				if WaitIfOutOfMemory() {
+				if tail.WaitIfOutOfMemory() {
 					continue
 				}
 			}
@@ -568,7 +575,7 @@ func (tail *Tail) waitForChanges() error {
 		return nil
 	case <-tail.Dying():
 		return ErrStop
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		return nil
 	}
 	panic("unreachable")
@@ -595,7 +602,7 @@ func (tail *Tail) dropBrokenLine() (err error) {
 		for !tail.regex.MatchString(tail.pre_read) {
 			sline, err = tail.reader.ReadSlice('\n')
 			if err == bufio.ErrBufferFull {
-				log.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
+				tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 				continue
 			}
 			tail.pre_read = CopyBytesToString(sline)
@@ -617,7 +624,7 @@ func (tail *Tail) dropBrokenLine() (err error) {
 			if b[0] != '\n' {
 				sline, err = tail.reader.ReadSlice('\n')
 				if err == bufio.ErrBufferFull {
-					log.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
+					tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 					return
 				}
 
@@ -689,10 +696,10 @@ func (tail *Tail) Cleanup() {
 	watch.Cleanup(tail.Filename)
 }
 
-func WaitIfOutOfMemory() bool {
+func (tail *Tail) WaitIfOutOfMemory() bool {
 	_mem := atomic.LoadInt64(&Mem)
 	if _mem > MemLimit {
-		log.Printf("mem is overlimit: %d, wait a second.", _mem)
+		tail.Logger.Printf("mem is overlimit: %d, wait a second.", _mem)
 		time.Sleep(time.Second)
 		return true
 	}
