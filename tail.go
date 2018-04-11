@@ -48,13 +48,15 @@ var (
 )
 
 type Line struct {
-	Text string
-	Err  error // Error from tail
+	Order uint64
+	Text  string
+	Err   error // Error from tail
 }
 
 // NewLine returns a Line with present time.
-func NewLine(text string) *Line {
-	return &Line{text, nil}
+func (tail *Tail) NewLine(text string) *Line {
+	// TODO order
+	return &Line{Text: text, Order: atomic.AddUint64(&tail.order, 1)}
 }
 
 // SeekInfo represents arguments to `os.Seek`
@@ -94,6 +96,8 @@ type Config struct {
 	// To disable logging: set field to tail.DiscardingLogger
 	Regex  string
 	Logger logger
+
+	StartWithOrder uint64
 }
 
 type Tail struct {
@@ -119,6 +123,7 @@ type Tail struct {
 	regex    *regexp.Regexp
 
 	pre_read string
+	order    uint64
 }
 
 var (
@@ -147,6 +152,7 @@ func TailFile(filename string, config Config) (t *Tail, err error) {
 		t.offset = config.Location.Offset
 	}
 
+	t.order = config.StartWithOrder
 	// when Logger was not specified in config, use default logger
 	if t.Logger == nil {
 		t.Logger = log.New(os.Stderr, "", log.LstdFlags)
@@ -182,8 +188,12 @@ func TailFile(filename string, config Config) (t *Tail, err error) {
 	return t, nil
 }
 
+func (tail *Tail) Order() (order uint64) {
+	return atomic.LoadUint64(&tail.order)
+}
+
 func (tail *Tail) Offset() (offset int64) {
-	return atomic.LoadInt64(&(tail.offset))
+	return atomic.LoadInt64(&tail.offset)
 }
 
 func (tail *Tail) AddLineBytes(value int64) {
@@ -245,6 +255,8 @@ func (tail *Tail) reopen() error {
 	return nil
 }
 
+// 不对日志进行正则匹配的情况，调用_readLine.否则，调用下面的_readXLine.
+// 用read slice是由于有可能会出现异常情况，比如日志中存在异常的大量\0或超长行，导致一直读不到换行符，却把内存撑爆了
 func (tail *Tail) _readLine() (string, error) {
 	tail.lk.Lock()
 	defer tail.lk.Unlock()
@@ -269,16 +281,20 @@ func (tail *Tail) _readLine() (string, error) {
 	return line, err
 }
 
+// 需要对日志进行正则匹配，以匹配多个物理行为一个逻辑行时，调用此方法。
+// 用readslice的理由同上，主要是为了避免内存问题。此外，读多行的逻辑更加复杂，需要更小心。
 func (tail *Tail) _readXLine() (line string, err error) {
 	tail.lk.Lock()
 	defer tail.lk.Unlock()
 	var sline []byte
 
+	// pre read 用于判断“上一行”是否是正常行。
 	if tail.pre_read == "" {
-		// 若这一行不是正经日志， 就一直读，直到先读到正经的一行
+		// 若这一行不是正常日志， 就一直读，直到先读到正经的一行，并丢弃不正常的行。
 		for !tail.regex.MatchString(tail.pre_read) {
 			sline, err = tail.reader.ReadSlice('\n')
 			if err == bufio.ErrBufferFull {
+				// 防止异常行或者超长行导致内存爆掉。
 				tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 				tail.offset = atomic.AddInt64(&(tail.offset), int64(len(sline)))
 				continue
@@ -342,12 +358,14 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		// FIXME 读完之前无法中断。考虑是否有办法做得好一点？
 		for {
 			line, err := tail.reader.ReadSlice('\n')
+			// 此处err有两种情况， bufio.ErrBufferFull说明buffer读满了也没读到换行符。此时要丢弃这一行，继续读
 			if err == bufio.ErrBufferFull {
 				tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 				tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
 				continue
 			}
 
+			// 如果err非空但不是上一种情况，那err应当是io.EOF。这是正常现象。
 			if err != nil {
 				// fmt.Printf("pre read: '%s' \n", tail.pre_read)
 				mbuffer.Write(line)
@@ -357,6 +375,7 @@ func (tail *Tail) _readXLine() (line string, err error) {
 
 			line_str := string(line)
 
+			// 如果匹配不上正则，则说明要继续拼装。直到下一行匹配上了正则时，把之前的所有物理行视为同一个逻辑行，并结束循环匹配，保存pre_read.
 			if !tail.regex.MatchString(line_str) {
 				mbuffer.Write(line)
 			} else {
@@ -438,7 +457,7 @@ func (tail *Tail) tailFileSync() {
 	for {
 		select {
 		case <-ticker.C:
-			// 检查
+			// 每隔一定时间，检查inode是否发生变化，或者偏移量是否大于文件实际大小了。若有，则说明日志被截断或发生了logrotate
 			will_reopen := false
 
 			fi, err := os.Stat(tail.Filename)
@@ -492,7 +511,7 @@ func (tail *Tail) tailFileSync() {
 						return
 					}
 				} else if tail.Follow && line == "" {
-					// TODO 不一定说明被截断了，也可能是preread的时候
+					// TODO 感觉好像不一定说明被截断了，也可能是preread的时候出错？
 				}
 
 				// When EOF is reached, wait for more data to become
@@ -683,7 +702,7 @@ func (tail *Tail) sendLine(line string) bool {
 		time.Sleep(time.Millisecond * 100)
 	}
 
-	tail.Lines <- &Line{line, nil}
+	tail.Lines <- tail.NewLine(line)
 	tail.AddLineBytes(int64(len(line)))
 
 	return true

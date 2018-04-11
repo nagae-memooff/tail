@@ -178,7 +178,6 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 				}
 
 			case evt.Op&fsnotify.Write == fsnotify.Write:
-				// TODO 精简这里的系统调用
 				changes.NotifyModified()
 				// fi, err := os.Stat(fw.Filename)
 				// if err != nil {
