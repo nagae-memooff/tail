@@ -375,23 +375,45 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		mbuffer := bytes.NewBuffer(make([]byte, 0, 4096))
 		mbuffer.WriteString(tail.pre_read)
 		mbuffer.WriteString(nextline)
+		// fmt.Printf("pre read: '%s' \nnextline: '%s'\n", tail.pre_read, nextline)
 
 		// FIXME 读完之前无法中断。考虑是否有办法做得好一点？
 		for {
 			line, err := tail.reader.ReadSlice('\n')
-			// 此处err有两种情况， bufio.ErrBufferFull说明buffer读满了也没读到换行符。此时要丢弃这一行，继续读
-			if err == bufio.ErrBufferFull {
+			// fmt.Printf("line: '%s', err: %s.\n", line , err)
+
+			// fmt.Printf("pre read: '%s' \n", tail.pre_read)
+			switch err {
+			case bufio.ErrBufferFull:
+				// bufio.ErrBufferFull说明buffer读满了也没读到换行符。此时要丢弃这一行，继续读
 				tail.Logger.Printf("bufio.ErrBufferFull in %s. May be the file is broken or the line is too long.", tail.Filename)
 				tail.offset = atomic.AddInt64(&(tail.offset), int64(len(line)))
 				continue
-			}
+			case io.EOF:
+				if len(line) > 0 && line[len(line)-1] != '\n' {
+					// io.EOF并且行尾不是回车，说明没等读到换行符就eof了，需要继续读取，直到读出来一个换行符为止
+					var tail_line []byte
+					xline := make([]byte, 0, len(line) * 2)
+					xline = append(xline, line...)
 
-			// 如果err非空但不是上一种情况，那err应当是io.EOF。这是正常现象。
-			if err != nil {
-				// fmt.Printf("pre read: '%s' \n", tail.pre_read)
-				mbuffer.Write(line)
-				tail.pre_read = string(mbuffer.Bytes())
-				return "wait", err
+					for err == io.EOF {
+						time.Sleep(10 * time.Millisecond)
+						tail_line, err = tail.reader.ReadSlice('\n')
+
+						xline = append(xline, tail_line...)
+					}
+
+					line = xline
+				} else {
+					mbuffer.Write(line)
+					tail.pre_read = string(mbuffer.Bytes())
+					return "wait", err
+				}
+			case nil:
+				// do nothing
+			default:
+				// 是否有可能发生其他错误?
+				tail.Logger.Printf("read file error: %s. filename: %s.",err ,tail.Filename)
 			}
 
 			line_str := string(line)
