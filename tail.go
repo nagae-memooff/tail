@@ -44,7 +44,7 @@ func init() {
 var (
 	ErrStop  = errors.New("tail should now stop")
 	Mem      int64
-	MemLimit int64 = 200 * 1048576
+	MemLimit int64 = 300 * 1048576
 )
 
 type Line struct {
@@ -315,11 +315,32 @@ func (tail *Tail) _readXLine() (line string, err error) {
 		return "", err
 	}
 
-	if err != nil {
+	if err != nil && err != io.EOF {
 		return "", err
 	}
 
-	nextline := CopyBytesToString(sline)
+	var nextline string
+
+	if err == io.EOF && len(sline) == 0 {
+		return "", err
+	} else if err == io.EOF && len(sline) > 0 && sline[len(sline)-1] != '\n' {
+		nextline = CopyBytesToString(sline)
+
+		// 说明没读完整行就eof了，需要继续读直到一整行出来
+		// FIXME  是否有必要优化逻辑？ 目前这个代码有两个隐患：
+		// 1、写如不完整的行之后，再也没有写完，会导致反复循环读取（比如磁盘满了等）
+		// 2、超长行在这里无法被过滤丢弃
+		var _nextline []byte
+
+		for err == io.EOF {
+			time.Sleep(10 * time.Millisecond)
+			_nextline, err = tail.reader.ReadSlice('\n')
+			nextline = nextline + string(_nextline)
+		}
+
+	} else {
+		nextline = CopyBytesToString(sline)
+	}
 
 	if tail.regex.MatchString(nextline) {
 		line = tail.pre_read
@@ -452,7 +473,6 @@ func (tail *Tail) tailFileSync() {
 	}
 
 	tail.openReader()
-
 	// Read line by line.
 	for {
 		select {
@@ -466,7 +486,7 @@ func (tail *Tail) tailFileSync() {
 
 			} else {
 				stat, ok := fi.Sys().(*syscall.Stat_t)
-				if (ok && stat.Ino != tail.inode) || fi.Size() < tail.offset {
+				if (ok && stat.Ino != tail.inode) || fi.Size() < tail.Offset() {
 					will_reopen = true
 				}
 			}
@@ -505,7 +525,7 @@ func (tail *Tail) tailFileSync() {
 				if tail.Follow && line != "" && tail.regex == nil {
 					// this has the potential to never return the last line if
 					// it's not followed by a newline; seems a fair trade here
-					err := tail.seekTo(SeekInfo{Offset: tail.offset, Whence: 0})
+					err := tail.seekTo(SeekInfo{Offset: tail.Offset(), Whence: 0})
 					if err != nil {
 						tail.Kill(err)
 						return
@@ -698,7 +718,7 @@ func (tail *Tail) sendLine(line string) bool {
 	}
 
 	for tail.line_bytes > tail.Config.MaxLineSize {
-		// fmt.Printf("wait: %d/%d\n", tail.line_bytes, tail.Config.MaxLineSize)
+		// fmt.Printf("wait: %d/%d\nmsg:%s", tail.line_bytes, tail.Config.MaxLineSize,line)
 		time.Sleep(time.Millisecond * 100)
 	}
 
